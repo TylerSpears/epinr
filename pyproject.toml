@@ -1,0 +1,104 @@
+[build-system]
+requires = ["setuptools>=46.1.0", "setuptools_scm[toml]>=5", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+version_scheme = "no-guess-dev"
+
+[tool.isort]
+profile = "black"
+skip_gitignore = true
+
+[tool.black]
+line-length = 88
+fast = true
+target-version = ['py311']
+include = '\.pyi?$'
+exclude = '''
+
+(
+  /(
+      \.eggs         # exclude a few common directories in the
+    | \.git          # root of the project
+    | \.hg
+    | \.mypy_cache
+    | \.tox
+    | \.venv
+    | _build
+    | buck-out
+    | build
+    | dist
+  )/
+  #| foo.py           # also separately exclude a file named foo.py in
+  #                   # the root of the project
+)
+'''
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    'ignore::DeprecationWarning:monai',
+    'ignore::DeprecationWarning:docker',
+]
+
+[tool.pyright]
+exclude = [
+    "**/node_modules",
+    "**/__pycache__",
+    "**/.ipynb_checkpoints",
+    "**/results",
+    "**/externals",
+]
+# Disable more strict checks from pyright. See
+# <https://github.com/microsoft/pyright/blob/main/docs/configuration.md#type-check-rule-overrides>
+reportArgumentType = false
+reportIncompatibleMethodOverride = false
+reportCallIssue = false
+reportOptionalMemberAccess = false
+reportReturnType = "information"
+reportOptionalCall = false
+reportPossiblyUnboundVariable = "information"
+reportOptionalIterable = false
+reportIncompatibleVariableOverride = false
+reportOptionalOperand = false
+reportAssignmentType = false
+reportGeneralTypeIssues = false
+reportAttributeAccessIssue = "information"
+reportOptionalSubscript = false
+reportOptionalContextManager = "information"
+reportInvalidTypeArguments = "warning"
+reportPrivateImportUsage = false
+reportImportCycles = 'information'
+reportRedeclaration = "warning"
+
+[tool.pycln]
+disable_all_dunder_policy = true
+extend_exclude = "__init__.py"
+
+[tool.ruff]
+respect-gitignore = true
+# Extend excludes from the defaults.
+extend-exclude = ["externals", "results", "environment"]
+# Same as Black.
+line-length = 88
+indent-width = 4
+
+[tool.ruff.format]
+# Like Black, use double quotes for strings.
+quote-style = "double"
+# Like Black, indent with spaces, rather than tabs.
+indent-style = "space"
+
+[tool.ruff.lint]
+ignore-init-module-imports = true
+ignore = [
+    "E402", # Imports at the top
+    "E731", # Assigning to lambda expressions
+    "E741", # Ambiguous variable names
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["E402", "F401"]
+"**/{tests,docs,tools}/*" = ["E402", "F401"]
+
+[tool.ruff.lint.pydocstyle]
+convention = 'numpy'

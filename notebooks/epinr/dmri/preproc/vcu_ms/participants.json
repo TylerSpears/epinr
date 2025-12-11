@@ -1,0 +1,13 @@
+{
+  "participant_id": {
+    "LongName": "Participant ID",
+    "Description": "Assigned identification number"
+  },
+  "group": {
+    "LongName": "Group",
+    "Levels": {
+      "Healthy": "Healthy control",
+      "MS": "Multiple sclerosis patient"
+    }
+  }
+}

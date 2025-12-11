@@ -1,0 +1,8 @@
+aim
+antspyx
+graphviz
+more-itertools
+plotly
+python-dotenv
+sqlalchemy>=2.0
+sympy

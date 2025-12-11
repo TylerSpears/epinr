@@ -1,0 +1,52 @@
+default_language_version:
+    python: python3.11
+repos:
+    - repo: https://github.com/pre-commit/pre-commit-hooks
+      rev: v5.0.0
+      hooks:
+          - id: check-yaml
+            args: ["--unsafe"]
+          - id: check-added-large-files
+            args: ["--maxkb=10000"]
+          - id: check-ast
+          - id: detect-private-key
+          - id: fix-encoding-pragma
+          - id: check-symlinks
+          - id: end-of-file-fixer
+          - id: mixed-line-ending
+          - id: pretty-format-json
+            args: ["--autofix", "--no-sort-keys"]
+          - id: requirements-txt-fixer
+          - id: check-merge-conflict
+
+    - repo: https://github.com/astral-sh/ruff-pre-commit
+      # Ruff version.
+      rev: v0.8.6
+      hooks:
+          # Run the linter.
+          - id: ruff
+            args: ["--fix", "--exit-zero"]
+          # Run the formatter.
+          - id: ruff-format
+
+    - repo: https://github.com/pycqa/isort
+      rev: 5.13.2
+      hooks:
+          - id: isort
+            name: isort (python)
+
+    # - repo: https://github.com/psf/black-pre-commit-mirror
+    #   rev: 23.12.1
+    #   hooks:
+    #       - id: black-jupyter
+    #         # It is recommended to specify the latest version of Python
+    #         # supported by your project here, or alternatively use
+    #         # pre-commit's default_language_version, see
+    #         # https://pre-commit.com/#top_level-default_language_version
+    #         # language_version: python3.11
+
+    - repo: https://github.com/hadialqattan/pycln
+      rev: v2.4.0 # Possible releases: https://github.com/hadialqattan/pycln/releases
+      hooks:
+          - id: pycln
+            args: [--config=pyproject.toml]

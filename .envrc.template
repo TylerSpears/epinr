@@ -1,0 +1,4 @@
+layout anaconda mrinr
+dotenv
+
+PROJECT_ROOT=$(expand_path "$PROJECT_ROOT")

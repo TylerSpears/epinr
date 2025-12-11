@@ -1,0 +1,20 @@
+
+# Generic ML/DS libraries
+einops
+
+# Jax libraries
+jax[cuda12]
+jaxtyping
+lightning
+monai
+opt-einsum
+pytorch-fid
+pytorch-msssim
+# Pytorch libraries
+torch
+torch-interpol
+torchinfo
+torchio
+torchlens
+torchvision
+torchviz
