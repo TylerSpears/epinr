@@ -12,7 +12,7 @@ ACTIVE_CONDA_ENV=$(conda info --json | jq -e -r '.active_prefix_name')
 # The explicit, channel-specific environment will be the default environment file.
 # Use sed to remove all pip-installed packages, as --no-pip does not seem to work
 # with --export.
-conda list --explicit --export --no-pip --prefix "$ACTIVE_PREFIX" |
+conda list --explicit --md5 --export --no-pip --prefix "$ACTIVE_PREFIX" |
     sed -E '/.*=pypi.*$/d' \
         >"$ACTIVE_CONDA_ENV.txt"
 # Also export cross-platform env file.
@@ -35,14 +35,6 @@ conda list |
     sed '/^[^#]/ s/\(^.*antspyx==.*$\)/#\ \1/' |
     sed '/antspyx==.*$/a antspyx' \
         >"${ACTIVE_CONDA_ENV}_pip_only_requirements.txt"
-
-# Also create a second version of requirements.txt that does not include any jax
-# dependencies. Note: the nvidia-* packages are from jax/jaxlib. Also, jaxtyping does
-# *not* require jax, and it is a required package.
-/usr/bin/env cat "${ACTIVE_CONDA_ENV}_pip_only_requirements.txt" |
-    sed '/^[^#]/ s/\(^nvidia-.*==.*$\)/#\ \1/' |
-    sed '/^[^#]/ s/\(^jax\(lib\)\?==.*$\)/#\ \1/' \
-        >"${ACTIVE_CONDA_ENV}_pip_only_no_jax_requirements.txt"
 
 # Create a constraints file from the anaconda packages to be used in the pip install.
 # This can help (but not totally solve) the problem of pip packages pulling extra
