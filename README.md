@@ -1,7 +1,8 @@
 # EPINR
 
-This repository contains research and project code for using implicit neural representations
-with magnetic resonance (MR) images.
+This repository contains research and project code for the EPINR susceptibility distortion correction method.
+
+The EPINR paper may be found at <https://openreview.net/forum?id=xrISwrfA0Y>
 
 ## Environment Setup
 
