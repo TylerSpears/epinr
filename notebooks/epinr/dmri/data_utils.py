@@ -614,6 +614,146 @@ def blur_mask(
     return m_blurred
 
 
+@torch.no_grad()
+def downsample_to_target_antialiased(
+    x: mrinr.typing.SingleScalarVolume,
+    affine_x_el2coords: mrinr.typing.SingleHomogeneousAffine3D,
+    target_spatial_shape: tuple[int, ...],
+    target_affine_el2coords: mrinr.typing.SingleHomogeneousAffine3D,
+    # Scale sigma beyond Nyquist, in voxels; typically in [1.0, 1.6].
+    sigma_vox_scale: float = 1.0,
+    truncate: float = 3.0,
+    **grid_resample_kwargs,
+) -> mrinr.typing.SingleScalarVolume:
+    orig_shape = tuple(x.shape)
+    if affine_x_el2coords.ndim != target_affine_el2coords.ndim:
+        raise ValueError(
+            f"Input affine_x_el2coords and target_affine_el2coords must have the "
+            f"same number of dimensions, got {affine_x_el2coords.ndim} and "
+            f"{target_affine_el2coords.ndim}"
+        )
+    if x.ndim == 4:
+        x = x.unsqueeze(0)  # Add batch dim.
+    if affine_x_el2coords.ndim == 2:
+        affine_x_el2coords = affine_x_el2coords.unsqueeze(0)
+        target_affine_el2coords = target_affine_el2coords.unsqueeze(0)
+    if x.shape[0] != 1:
+        raise ValueError(
+            f"Input volume x must have a batch dimension of size 1 if 4D, got {tuple(x.shape)}"
+        )
+    elif affine_x_el2coords.shape[0] != 1:
+        raise ValueError(
+            f"Input affine_x_el2coords must have a batch dimension of size 1 if 3D, got {tuple(affine_x_el2coords.shape)}"
+        )
+    elif target_affine_el2coords.shape[0] != 1:
+        raise ValueError(
+            f"Input target_affine_el2coords must have a batch dimension of size 1 if 3D, got {tuple(target_affine_el2coords.shape)}"
+        )
+
+    target_spacing = (
+        mrinr.coords.spacing(target_affine_el2coords).flatten().cpu().numpy()
+    )
+    orig_spacing = mrinr.coords.spacing(affine_x_el2coords).flatten().cpu().numpy()
+
+    # Compute sigma for Gaussian antialiasing filter.
+    sigma_vox = sigma_vox_scale * 0.5 * (target_spacing / orig_spacing)
+    print(f"{orig_spacing=}, {target_spacing=}")
+    print(f"Downsampling with sigma_vox: {sigma_vox}")
+    x_blurred = skimage.filters.gaussian(
+        image=x.cpu().squeeze(0).numpy(),
+        sigma=sigma_vox,
+        mode="reflect",
+        truncate=truncate,
+        preserve_range=True,
+        channel_axis=0,
+    )
+    x_blurred = torch.from_numpy(x_blurred).to(x).unsqueeze(0)
+
+    # Resample to target coordinates.
+    y = mrinr.grid_resample(
+        x_blurred,
+        affine_x_el2coords=affine_x_el2coords,
+        sample_coords=mrinr.coords.affine_coord_grid(
+            target_affine_el2coords, target_spatial_shape[-3:]
+        ),
+        **grid_resample_kwargs,
+    )
+
+    if len(orig_shape) == 4:
+        y = y.squeeze(0)  # Remove batch dim.
+    return y
+
+
+@torch.no_grad()
+def resize_antialiased(
+    x: mrinr.typing.SingleScalarVolume,
+    affine_x_el2coords: mrinr.typing.SingleHomogeneousAffine3D,
+    target_spatial_shape: tuple[int, ...],
+    # Scale sigma beyond Nyquist, in voxels; typically in [1.0, 1.6].
+    sigma_vox_scale: float = 1.0,
+    truncate: float = 3.0,
+    **grid_resample_kwargs,
+) -> tuple[mrinr.typing.SingleScalarVolume, mrinr.typing.SingleHomogeneousAffine3D]:
+    orig_shape = tuple(x.shape)
+    if x.ndim == 4:
+        x = x.unsqueeze(0)  # Add batch dim.
+    if affine_x_el2coords.ndim == 2:
+        affine_x_el2coords = affine_x_el2coords.unsqueeze(0)
+    if x.shape[0] != 1:
+        raise ValueError(
+            f"Input volume x must have a batch dimension of size 1 if 4D, got {tuple(x.shape)}"
+        )
+    elif affine_x_el2coords.shape[0] != 1:
+        raise ValueError(
+            f"Input affine_x_el2coords must have a batch dimension of size 1 if 3D, got {tuple(affine_x_el2coords.shape)}"
+        )
+    orig_spatial_shape = tuple(x.shape[-3:])
+
+    # Compute sigma for Gaussian antialiasing filter.
+    sigma_vox = (
+        sigma_vox_scale
+        * 0.5
+        * (np.array(target_spatial_shape) / np.array(orig_spatial_shape))
+    )
+    print(f"Resizing with sigma_vox: {sigma_vox}")
+    x_blurred = skimage.filters.gaussian(
+        image=x.cpu().squeeze(0).numpy(),
+        sigma=sigma_vox,
+        mode="reflect",
+        truncate=truncate,
+        preserve_range=True,
+        channel_axis=0,
+    )
+    x_blurred = torch.from_numpy(x_blurred).to(x).unsqueeze(0)
+
+    # Resample to target spatial shape.
+    y, affine_y = mrinr.resize(
+        x_blurred,
+        affine_x_el2coords=affine_x_el2coords,
+        target_spatial_shape=target_spatial_shape,
+        centered=True,
+        **grid_resample_kwargs,
+    )
+
+    if len(orig_shape) == 4:
+        y = y.squeeze(0)  # Remove batch dim.
+        affine_y = affine_y.squeeze(0)
+    return y, affine_y
+
+
+# @torch.no_grad()
+# def resize_antialias(
+#     x: mrinr.typing.SingleScalarVolume,
+#     affine_x_el2coords: mrinr.typing.SingleHomogeneousAffine3D,
+#     target_spatial_shape: tuple[int, ...],
+#     centered: bool = True,
+# ) -> tuple[mrinr.typing.AnySpatialDataSD, mrinr.typing.AnyHomogeneousAffineSD]:
+#     orig_shape = tuple(x.shape)
+#     if x.ndim == 4:
+#         x = x.unsqueeze(0)  # Add batch dim.
+#     orig_spatial_shape = tuple(x.shape[2:])
+
+
 def ras_displacement_field_vox2susceptibility_field_hz(
     displacement_field_vox,
     readout_time_s: float,
