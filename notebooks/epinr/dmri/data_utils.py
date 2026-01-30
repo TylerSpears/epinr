@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 import collections
-import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -123,13 +122,13 @@ def load_dwi_subject_data(
     subject_data_list = []
     for _, row in dataset_table.iterrows():
         subj_data = collections.defaultdict(lambda: None)
-        dataset_name = row["dataset_name"]
+        dataset_name = str(row["dataset_name"])
         subj_data["dataset_name"] = dataset_name
-        subj_data["subj_id"] = row["subj_id"]
-        subj_data["session_id"] = row["session_id"]
-        subj_data["run_id"] = row["run_id"]
-        subj_data["dwi_idx"] = row["dwi_idx"]
-        subj_data["pe_dir"] = PE_DIR_ALIASES[row["pe_dir"]]
+        subj_data["subj_id"] = str(row["subj_id"])
+        subj_data["session_id"] = str(row["session_id"])
+        subj_data["run_id"] = str(row["run_id"])
+        subj_data["dwi_idx"] = str(row["dwi_idx"])
+        subj_data["pe_dir"] = PE_DIR_ALIASES[str(row["pe_dir"]).lower()]
         subj_data["total_readout_time_s"] = float(row["total_readout_time_s"])
 
         dataset_dir = dataset_dirs[dataset_name]
@@ -251,9 +250,9 @@ def load_dwi_subject_data(
             ("t1w", subj_data["t1w_affine"]),
         ]:
             ax_orient = mrinr.coords.get_neuro_affine_orientation_code(affine)
-            assert (
-                ax_orient == "RAS"
-            ), f"{n} affine is not in RAS orientation: {ax_orient}"
+            assert ax_orient == "RAS", (
+                f"{n} affine is not in RAS orientation: {ax_orient}"
+            )
 
         # Create grid fov and min coordinate tensors for normalizing coordinates to
         # [0, 1] range.
@@ -294,234 +293,6 @@ def load_dwi_subject_data(
     return subject_data_list
 
 
-class WeightedNMIParzenLoss(torch.nn.modules.loss._Loss):
-    def __init__(
-        self,
-        num_bins: int = 32,
-        sigma_ratio: float = 0.5,
-        reduction: str = "mean",
-        eps: float = 1e-7,
-        norm_mi: bool = True,
-        norm_images: bool = True,
-    ):
-        super().__init__(reduction=reduction)
-        if num_bins <= 0:
-            raise ValueError("num_bins must > 0, got {num_bins}")
-        self.spatial_dims = 3
-        self.num_bins = int(num_bins)
-        # shape (num_bins)
-        bin_centers = torch.linspace(0.0, 1.0, self.num_bins)
-        self.register_buffer("bin_centers", bin_centers)
-        self.bin_centers: torch.Tensor
-
-        sigma = torch.mean(self.bin_centers[1:] - self.bin_centers[:-1]) * sigma_ratio
-        self.register_buffer("sigma", sigma)
-        self.sigma: torch.Tensor
-        self.eps = eps
-        self.norm_mi = norm_mi
-        self.norm_images = norm_images
-
-    @staticmethod
-    def spatial_normalize(x: torch.Tensor, eps: float) -> torch.Tensor:
-        """Min-max normalize x to [0, 1] along spatial dimensions."""
-        x_min = einops.reduce(x, "b c x y z -> b c 1 1 1", "min")
-        x_max = einops.reduce(x, "b c x y z -> b c 1 1 1", "max")
-        x_normalized = (x - x_min) / (x_max - x_min + eps)
-        return x_normalized
-
-    def parzen_windowing_gaussian(self, x: torch.Tensor) -> torch.Tensor:
-        """Parzen Gaussian weighting function to approximate histogram differentiably.
-
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input tensor of shape B x C x X x Y x Z.
-
-            *NOTE* Input volume must have intensities normalized to [0, 1]. Intensities
-            will be clamped to [0, 1] internally.
-        Returns
-        -------
-        torch.Tensor
-            Discrete probability distributions for each voxel, shape
-            (B*C) x (X*Y*Z) x num_bins. Distributions are not averaged over spatial
-            dimensions.
-        """
-        y = torch.clamp(x, 0.0, 1.0)
-        # Move independent dims to the front, and merge spatial dims into a sampling
-        # dimension, plus a singleton dimension for broadcasting hist. bins.
-        y = einops.rearrange(y, "b c ... -> (b c) (...) 1")
-        w_parzen = (1 / (self.sigma * math.sqrt(2 * math.pi))) * torch.exp(
-            -0.5 * ((y - self.bin_centers[None, None, :]) / self.sigma) ** 2
-        )
-        # Normalize over bins.
-        p = w_parzen / torch.maximum(
-            torch.sum(w_parzen, dim=-1, keepdim=True),
-            w_parzen.new_tensor([self.eps]),
-        )
-        # Wait to average over sampling dimensions until estimating the joint histogram.
-        return p
-
-    def weighted_nmi(
-        self,
-        pred: mrinr.typing.ScalarVolume,
-        target: mrinr.typing.ScalarVolume,
-        weight_mask: Optional[mrinr.typing.ScalarVolume] = None,
-        norm_mi: bool = True,
-        normalize_images: bool = True,
-    ) -> torch.Tensor:
-        """Args:
-            pred: the shape should be B[NDHW].
-            target: the shape should be same as the pred shape.
-            weight_mask: the shape should be B[1DHW] or B[NDHW], optional.
-        Raises:
-            ValueError: When ``self.reduction`` is not one of ["mean", "sum", "none"].
-        """
-        if target.shape != pred.shape:
-            raise ValueError(
-                f"ground truth has differing shape ({target.shape}) from pred ({pred.shape})"
-            )
-
-        if normalize_images:
-            # Normalize pred and target to [0, 1] along spatial dims, keeping batch and
-            # channel dims independent.
-            x = self.spatial_normalize(pred, eps=self.eps)
-            y = self.spatial_normalize(target, eps=self.eps)
-        else:
-            x = pred
-            y = target
-
-        # Parzen windowing, without averaging over samples. Outputs are
-        # shape (B*C)(D*H*W)(num_bins).
-        p_pred = self.parzen_windowing_gaussian(x)
-        p_target = self.parzen_windowing_gaussian(y)
-
-        # Estimate joint histogram P_pred,target weighted by the weight mask if
-        # provided.
-        if weight_mask is not None:
-            w = einops.rearrange(
-                weight_mask.expand_as(pred), "b c x y z -> (b c) (x y z) 1 1"
-            )
-            # Normalize the weight mask to be in the range [0, 1].
-            w = w / torch.maximum(
-                w.max(dim=1, keepdim=True).values, w.new_tensor([self.eps])
-            )
-        else:
-            w = 1.0
-        p_joint = (
-            w * einops.einsum(p_pred, p_target, "bc xyz i, bc xyz j -> bc xyz i j")
-        ).sum(1)
-        # Normalize joint histogram.
-        p_joint = p_joint / torch.maximum(
-            p_joint.sum(dim=(-2, -1), keepdim=True),
-            p_joint.new_tensor([self.eps]),
-        )
-        # Estimate marginal histograms.
-        p_pred_marginal = p_joint.sum(dim=-1)
-        p_target_marginal = p_joint.sum(dim=-2)
-
-        # Compute entropies.
-        H_pred = -torch.sum(
-            p_pred_marginal
-            * torch.log(
-                torch.maximum(p_pred_marginal, p_pred_marginal.new_tensor([self.eps]))
-            ),
-            dim=-1,
-        )
-        H_target = -torch.sum(
-            p_target_marginal
-            * torch.log(
-                torch.maximum(
-                    p_target_marginal, p_target_marginal.new_tensor([self.eps])
-                )
-            ),
-            dim=-1,
-        )
-        H_joint = -torch.sum(
-            p_joint * torch.log(torch.maximum(p_joint, p_joint.new_tensor([self.eps]))),
-            dim=(-2, -1),
-        )
-
-        # NMI or plain MI.
-        if norm_mi:
-            mi = (H_pred + H_target) / torch.maximum(
-                H_joint, H_joint.new_tensor([self.eps])
-            )
-        else:
-            mi = H_pred + H_target - H_joint
-
-        if self.reduction == "sum":
-            # sum over the batch and channel ndims
-            r = torch.sum(mi)
-        elif self.reduction == "none":
-            # No reduction of independent dims.
-            r = einops.rearrange(mi, "(b c) -> b c", b=pred.shape[0], c=pred.shape[1])
-        elif self.reduction == "mean":
-            # average over the batch and channel ndims
-            r = torch.mean(mi)
-        else:
-            raise ValueError(
-                f"Unsupported reduction: {self.reduction}, "
-                'available options are ["mean", "sum", "none"].'
-            )
-        return r
-
-    def forward(
-        self,
-        pred: mrinr.typing.ScalarVolume,
-        target: mrinr.typing.ScalarVolume,
-        weight_mask: Optional[mrinr.typing.ScalarVolume] = None,
-    ) -> torch.Tensor:
-        # Loss is negative NMI.
-        return -self.weighted_nmi(
-            pred,
-            target,
-            weight_mask=weight_mask,
-            norm_mi=self.norm_mi,
-            normalize_images=self.norm_images,
-        )
-
-
-class NCC(torch.nn.modules.loss._Loss):
-    # Normalized Cross Correlation
-    # Taken from <https://github.com/MIAGroupUT/IDIR/blob/main/objectives/ncc.py>,
-    # which itself was taken from <https://github.com/BDdeVos/TorchIR>
-    class _StableStd(torch.autograd.Function):
-        @staticmethod
-        def forward(ctx, tensor):
-            assert tensor.numel() > 1
-            ctx.tensor = tensor.detach()
-            res = torch.std(tensor).detach()
-            ctx.result = res.detach()
-            return res
-
-        @staticmethod
-        def backward(ctx, grad_output):
-            tensor = ctx.tensor.detach()
-            result = ctx.result.detach()
-            e = 1e-6
-            assert tensor.numel() > 1
-            return (
-                (2.0 / (tensor.numel() - 1.0))
-                * (grad_output.detach() / (result.detach() * 2 + e))
-                * (tensor.detach() - tensor.mean().detach())
-            )
-
-    def __init__(self, use_mask: bool = False):
-        super().__init__()
-        self.forward = self.metric
-
-    def ncc(self, x1, x2, e=1e-10):
-        assert x1.shape == x2.shape, "Inputs are not of similar shape"
-        cc = ((x1 - x1.mean()) * (x2 - x2.mean())).mean()
-        stablestd = self._StableStd.apply
-        std = stablestd(x1) * stablestd(x2)
-        ncc = cc / (std + e)
-        return ncc
-
-    def metric(self, fixed: torch.Tensor, warped: torch.Tensor) -> torch.Tensor:
-        return -self.ncc(fixed, warped)
-
-
 def central_diff_det_j(
     displacement_field_mm: mrinr.typing.CoordGrid3D, spacing: torch.Tensor, pe_dir
 ) -> mrinr.typing.ScalarVolume:
@@ -555,7 +326,7 @@ def central_diff_det_j(
     return 1 + dphi_da
 
 
-# Data preprocessing
+# Data preprocessing utilities.
 def scale_vol(
     x: mrinr.typing.SingleScalarVolume,
     winsorize_quantiles: tuple[float, float] = (0.005, 0.995),
@@ -739,19 +510,6 @@ def resize_antialiased(
         y = y.squeeze(0)  # Remove batch dim.
         affine_y = affine_y.squeeze(0)
     return y, affine_y
-
-
-# @torch.no_grad()
-# def resize_antialias(
-#     x: mrinr.typing.SingleScalarVolume,
-#     affine_x_el2coords: mrinr.typing.SingleHomogeneousAffine3D,
-#     target_spatial_shape: tuple[int, ...],
-#     centered: bool = True,
-# ) -> tuple[mrinr.typing.AnySpatialDataSD, mrinr.typing.AnyHomogeneousAffineSD]:
-#     orig_shape = tuple(x.shape)
-#     if x.ndim == 4:
-#         x = x.unsqueeze(0)  # Add batch dim.
-#     orig_spatial_shape = tuple(x.shape[2:])
 
 
 def ras_displacement_field_vox2susceptibility_field_hz(
