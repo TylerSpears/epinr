@@ -88,9 +88,12 @@ class DWISubjectData:
     t1w_fov: torch.Tensor
     t1w_min_coord: torch.Tensor
     t1w_mask: mrinr.typing.SingleScalarVolume
+    # Scaled T1w and b0 volumes for training.
+    scaled_b0: Optional[mrinr.typing.SingleScalarVolume] = None
+    scaled_t1w: Optional[mrinr.typing.SingleScalarVolume] = None
     # Topup-corrected ground truth data
-    topup_displace_hz: mrinr.typing.SingleCoordGrid3D
-    topup_corrected_b0: mrinr.typing.SingleScalarVolume
+    topup_displace_hz: Optional[mrinr.typing.SingleCoordGrid3D] = None
+    topup_corrected_b0: Optional[mrinr.typing.SingleScalarVolume] = None
     # Anatomical labels and transforms
     fs_label: Optional[mrinr.typing.SingleScalarVolume] = None
     t1w_wm_mask: Optional[mrinr.typing.SingleScalarVolume] = None
@@ -116,7 +119,7 @@ def vols_in_same_space(
 
 def load_dwi_subject_data(
     dataset_table: pd.DataFrame,
-    dataset_dirs: dict[str, Path],
+    dataset_dirs: dict[str, Path] | None,
     device: torch.device,
 ) -> list[DWISubjectData]:
     subject_data_list = []
@@ -131,7 +134,11 @@ def load_dwi_subject_data(
         subj_data["pe_dir"] = PE_DIR_ALIASES[str(row["pe_dir"]).lower()]
         subj_data["total_readout_time_s"] = float(row["total_readout_time_s"])
 
-        dataset_dir = dataset_dirs[dataset_name]
+        # If dataset_dirs is None, assume all paths in the dataset table are absolute.
+        if dataset_dirs is None:
+            dataset_dir = Path("/").resolve()
+        else:
+            dataset_dir = dataset_dirs[dataset_name]
 
         # Load b0 volume and associated data.
         b0_d = mrinr.data.io.load_vol(dataset_dir / row["dwi"], ensure_channel_dim=True)
@@ -159,18 +166,33 @@ def load_dwi_subject_data(
         )
         subj_data["t1w_mask"] = t1w_mask_d["vol"].bool()
 
-        # Load the topup displacement field for ground truth comparison.
-        topup_disp_d = mrinr.data.io.load_vol(
-            dataset_dir / row["topup_displacement_hz"], ensure_channel_dim=True
-        )
-        subj_data["topup_displace_hz"] = topup_disp_d["vol"].to(torch.float32)
-        # Load the topup corrected b0 volume for ground truth comparison.
-        topup_b0_d = mrinr.data.io.load_vol(
-            dataset_dir / row["topup_corrected_dwi"], ensure_channel_dim=True
-        )
-        subj_data["topup_corrected_b0"] = topup_b0_d["vol"].to(torch.float32)
+        # Load the topup displacement field for ground truth comparison, if given.
+        if not pd.isna(row["topup_displacement_hz"]):
+            topup_disp_d = mrinr.data.io.load_vol(
+                dataset_dir / row["topup_displacement_hz"], ensure_channel_dim=True
+            )
+            subj_data["topup_displace_hz"] = topup_disp_d["vol"].to(torch.float32)
+        else:
+            print(
+                f"Warning: topup_displacement_hz is missing for subject {subj_data['subj_id']}",
+                f"in dataset {dataset_name}.",
+            )
+            subj_data["topup_displace_hz"] = None
+        # Load the topup corrected b0 volume for ground truth comparison, if given.
+        if not pd.isna(row["topup_corrected_dwi"]):
+            topup_b0_d = mrinr.data.io.load_vol(
+                dataset_dir / row["topup_corrected_dwi"], ensure_channel_dim=True
+            )
+            subj_data["topup_corrected_b0"] = topup_b0_d["vol"].to(torch.float32)
+        else:
+            print(
+                f"Warning: topup_corrected_dwi is missing for subject {subj_data['subj_id']}",
+                f"in dataset {dataset_name}.",
+            )
+            subj_data["topup_corrected_b0"] = None
+            topup_b0_d = None
         # Load the susceptibility atlas warped to subject space, if available.
-        if row["suscept_atlas_mm_dir_ap"] is not None:
+        if not pd.isna(row["suscept_atlas_mm_dir_ap"]):
             try:
                 sd_atlas_d = mrinr.data.io.load_vol(
                     dataset_dir / row["suscept_atlas_mm_dir_ap"],
@@ -189,6 +211,10 @@ def load_dwi_subject_data(
                 subj_data["suscept_atlas_mm"] = None
                 sd_atlas_d = None
         else:
+            print(
+                f"Warning: suscept_atlas_mm is missing for subject "
+                f"{subj_data['subj_id']} in dataset {dataset_name}."
+            )
             subj_data["suscept_atlas_mm"] = None
             sd_atlas_d = None
 
@@ -237,12 +263,13 @@ def load_dwi_subject_data(
                     padding_mode="nearest",
                 )
 
-        assert vols_in_same_space(
-            subj_data["b0"],
-            subj_data["b0_affine"],
-            subj_data["topup_corrected_b0"],
-            topup_b0_d["affine"],
-        ), "b0 and topup_corrected_b0 are not in the same space."
+        if subj_data["topup_corrected_b0"] is not None:
+            assert vols_in_same_space(
+                subj_data["b0"],
+                subj_data["b0_affine"],
+                subj_data["topup_corrected_b0"],
+                topup_b0_d["affine"],
+            ), "b0 and topup_corrected_b0 are not in the same space."
 
         # Validate that all affines are in RAS orientation.
         for n, affine in [
@@ -250,9 +277,9 @@ def load_dwi_subject_data(
             ("t1w", subj_data["t1w_affine"]),
         ]:
             ax_orient = mrinr.coords.get_neuro_affine_orientation_code(affine)
-            assert ax_orient == "RAS", (
-                f"{n} affine is not in RAS orientation: {ax_orient}"
-            )
+            assert (
+                ax_orient == "RAS"
+            ), f"{n} affine is not in RAS orientation: {ax_orient}"
 
         # Create grid fov and min coordinate tensors for normalizing coordinates to
         # [0, 1] range.

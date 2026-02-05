@@ -49,10 +49,13 @@ __all__ = [
 
 
 def dict_tensor_pin_to(tensor_dict: dict, device: torch.device, pin: bool) -> dict:
+    # Can only pin CPU tensors.
+    if "cpu" not in device.type:
+        pin = False
     d = dict()
     for k, v in tensor_dict.items():
         if torch.is_tensor(v):
-            d[k] = v.pin_memory().to(device) if pin else v.to(device)
+            d[k] = v.to(device).pin_memory() if pin else v.to(device)
         else:
             d[k] = v
     return d
